@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MediBook Patient Portal (Sandbox)</title>
+<style>
+  :root { --ink:#17324d; --muted:#5b6f82; --line:#d5dee7; --bg:#f3f7fa; --card:#fff; --brand:#0f7c8c; --err:#b3261e; --errbg:#fdecea; --ok:#1e7a46; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+  header { background:var(--ink); color:#fff; padding:14px 24px; display:flex; justify-content:space-between; align-items:center; }
+  header strong { font-size:18px; letter-spacing:.2px; }
+  header small { opacity:.75; }
+  main { max-width:640px; margin:32px auto; padding:0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:28px; }
+  h1 { margin:0 0 6px; font-size:26px; }
+  p.sub { margin:0 0 22px; color:var(--muted); }
+  label { display:block; font-weight:600; margin:16px 0 6px; }
+  input, textarea { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+  textarea { min-height:90px; resize:vertical; }
+  .hint { font-size:13px; color:var(--muted); margin-top:4px; }
+  button { font:inherit; cursor:pointer; }
+  .primary { margin-top:22px; background:var(--brand); color:#fff; border:0; border-radius:6px; padding:11px 20px; font-weight:600; }
+  .primary:disabled { opacity:.5; cursor:not-allowed; }
+  .link { background:none; border:0; color:var(--brand); padding:0; text-decoration:underline; }
+  .error-banner, .field-error { background:var(--errbg); color:var(--err); border-radius:6px; padding:10px 12px; margin-top:14px; font-size:14px; }
+  .slots { display:grid; grid-template-columns:repeat(auto-fill,minmax(84px,1fr)); gap:8px; margin-top:8px; }
+  .slot { border:1px solid var(--line); background:#fff; border-radius:6px; padding:8px 0; }
+  .slot[aria-pressed="true"] { background:var(--brand); color:#fff; border-color:var(--brand); }
+  .loading { color:var(--muted); font-size:14px; margin-top:8px; }
+  .appt { border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .ref { font-family:ui-monospace, Menlo, monospace; font-size:20px; color:var(--ok); }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<header><strong>MediBook</strong><small>Patient Portal &middot; Sandbox</small></header>
+<main>
+
+  <!-- Login -->
+  <section id="view-login" class="card" hidden>
+    <h1>Sign in to MediBook</h1>
+    <p class="sub">Manage your clinic appointments online.</p>
+    <form id="login-form" novalidate>
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="username">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password">
+      <button id="signin-btn" data-testid="signin-button" class="primary" type="submit">Sign in</button>
+    </form>
+    <div class="error-banner" role="alert" hidden></div>
+  </section>
+
+  <!-- Dashboard -->
+  <section id="view-dashboard" class="card" hidden>
+    <h1>Welcome back, Jordan</h1>
+    <p class="sub">Your upcoming appointments</p>
+    <div id="appt-list"></div>
+    <button class="primary" id="book-btn" type="button">Book appointment</button>
+    <p><button class="link" id="logout-btn" type="button">Sign out</button></p>
+  </section>
+
+  <!-- Booking -->
+  <section id="view-book" class="card" hidden>
+    <h1>Book an appointment</h1>
+    <p class="sub">Appointments can be booked 1 to 30 days ahead, Monday to Friday.</p>
+    <label for="appt-date">Appointment date</label>
+    <input id="appt-date" type="date">
+    <div id="date-error" class="field-error" role="alert" hidden></div>
+    <div id="slot-area" hidden>
+      <label>Available times</label>
+      <div id="slot-loading" class="loading">Loading available times&hellip;</div>
+      <div id="slots" class="slots"></div>
+    </div>
+    <label for="reason">Reason for visit</label>
+    <textarea id="reason"></textarea>
+    <div class="hint"><span id="reason-count">0</span>/200 characters</div>
+    <label for="insurance">Insurance ID (optional)</label>
+    <input id="insurance" placeholder="e.g. ABC1234567">
+    <div id="book-error" class="field-error" role="alert" hidden></div>
+    <button class="primary" id="confirm-btn" type="button">Confirm booking</button>
+    <p><button class="link" id="back-btn" type="button">Back to dashboard</button></p>
+  </section>
+
+  <!-- Confirmation -->
+  <section id="view-confirmed" class="card" hidden>
+    <h1>Appointment confirmed</h1>
+    <p class="sub">A confirmation email has been sent to <span id="conf-email"></span>.</p>
+    <p>Reference: <span class="ref" data-testid="booking-ref" id="booking-ref"></span></p>
+    <p id="conf-when"></p>
+    <button class="primary" id="done-btn" type="button">Back to dashboard</button>
+  </section>
+
+</main>
+<script>
+(function () {
+  const ACCOUNT = { email: 'patient@medibook.test', password: 'Clinic#2026' };
+  const MAX_ATTEMPTS = 3, LOCK_MS = 15 * 60 * 1000, IDLE_MS = 15 * 60 * 1000;
+  const SLOT_LOAD_MS = 2000;
+  const ss = window.sessionStorage;
+  const get = (k, d) => { try { const v = ss.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
+  const set = (k, v) => { try { ss.setItem(k, JSON.stringify(v)); } catch (e) {} };
+  const $ = (s) => document.querySelector(s);
+
+  const views = ['login', 'dashboard', 'book', 'confirmed'];
+  function show(name) {
+    views.forEach(v => { $('#view-' + v).hidden = v !== name; });
+    if (location.hash !== '#/' + name) history.replaceState(null, '', '#/' + name);
+  }
+  function route() {
+    const loggedIn = get('mb_session', false);
+    const want = (location.hash || '').replace('#/', '') || 'login';
+    if (!loggedIn) return show('login');
+    if (want === 'book') return openBooking();
+    if (want === 'confirmed' && get('mb_last', null)) return renderConfirmed();
+    renderDashboard();
+  }
+
+  // ---------- Login (REQ-01) ----------
+  $('#login-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const banner = $('.error-banner');
+    const lockedUntil = get('mb_locked_until', 0);
+    if (Date.now() < lockedUntil) {
+      banner.textContent = 'Account locked. Try again in 15 minutes.';
+      banner.hidden = false; return;
+    }
+    const email = $('#email').value.trim().toLowerCase();
+    const pw = $('#password').value;
+    if (email === ACCOUNT.email && pw === ACCOUNT.password) {
+      set('mb_attempts', 0); set('mb_session', true); banner.hidden = true;
+      renderDashboard(); return;
+    }
+    const attempts = get('mb_attempts', 0) + 1;
+    set('mb_attempts', attempts);
+    if (attempts >= MAX_ATTEMPTS) {
+      set('mb_locked_until', Date.now() + LOCK_MS);
+      banner.textContent = 'Account locked. Try again in 15 minutes.';
+    } else {
+      banner.textContent = 'Invalid email or password.';
+    }
+    banner.hidden = false;
+  });
+
+  // ---------- Dashboard ----------
+  function renderDashboard() {
+    const list = $('#appt-list'); list.innerHTML = '';
+    const appts = get('mb_appts', []);
+    if (!appts.length) list.innerHTML = '<p class="hint">You have no upcoming appointments.</p>';
+    appts.forEach((a, i) => {
+      const row = document.createElement('div'); row.className = 'appt';
+      const start = new Date(a.start);
+      const within24 = start - Date.now() < 24 * 3600 * 1000;
+      row.innerHTML = `<div><strong>${start.toDateString()} at ${a.time}</strong><div class="hint">${a.ref} &middot; ${escapeHtml(a.reason)}</div></div>`;
+      const btn = document.createElement('button'); btn.className = 'link'; btn.textContent = 'Cancel';
+      btn.disabled = within24;
+      if (within24) btn.title = 'Appointments can only be cancelled more than 24 hours in advance.';
+      btn.onclick = () => { const all = get('mb_appts', []); all.splice(i, 1); set('mb_appts', all); renderDashboard(); };
+      row.appendChild(btn); list.appendChild(row);
+    });
+    show('dashboard');
+  }
+  $('#book-btn').onclick = openBooking;
+  $('#logout-btn').onclick = () => { set('mb_session', false); show('login'); };
+  $('#back-btn').onclick = renderDashboard;
+  $('#done-btn').onclick = renderDashboard;
+
+  // ---------- Booking (REQ-03..06, REQ-09) ----------
+  let selectedSlot = null, slotTimer = null;
+  function openBooking() {
+    selectedSlot = null; clearTimeout(slotTimer);
+    $('#appt-date').value = ''; $('#reason').value = ''; $('#insurance').value = '';
+    $('#reason-count').textContent = '0';
+    $('#date-error').hidden = true; $('#book-error').hidden = true; $('#slot-area').hidden = true;
+    $('#slots').innerHTML = '';
+    show('book');
+  }
+  function todayLocal() { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+  function parseLocal(v) { const [y, m, d] = v.split('-').map(Number); return new Date(y, m - 1, d); }
+
+  function onDateChange() {
+    const v = $('#appt-date').value; const err = $('#date-error');
+    selectedSlot = null; clearTimeout(slotTimer);
+    $('#slots').innerHTML = ''; $('#slot-area').hidden = true; err.hidden = true;
+    if (!v) return;
+    const date = parseLocal(v);
+    const diffDays = Math.round((date - todayLocal()) / 86400000);
+    if (diffDays < 1 || diffDays > 30) {
+      err.textContent = 'Appointments must be booked 1 to 30 days in advance.'; err.hidden = false; return;
+    }
+    if (date.getDay() === 0 || date.getDay() === 6) {
+      err.textContent = 'The clinic is closed on weekends. Choose a weekday.'; err.hidden = false; return;
+    }
+    $('#slot-area').hidden = false; $('#slot-loading').hidden = false;
+    slotTimer = setTimeout(() => renderSlots(), SLOT_LOAD_MS);
+  }
+  $('#appt-date').addEventListener('change', onDateChange);
+
+  function renderSlots() {
+    $('#slot-loading').hidden = true;
+    const wrap = $('#slots'); wrap.innerHTML = '';
+    for (let mins = 8 * 60; mins <= 16 * 60 + 30; mins += 30) {
+      const t = String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'slot'; b.textContent = t; b.setAttribute('aria-pressed', 'false');
+      b.onclick = () => {
+        wrap.querySelectorAll('.slot').forEach(s => s.setAttribute('aria-pressed', 'false'));
+        b.setAttribute('aria-pressed', 'true'); selectedSlot = t;
+      };
+      wrap.appendChild(b);
+    }
+  }
+
+  $('#reason').addEventListener('input', () => { $('#reason-count').textContent = $('#reason').value.length; });
+
+  $('#confirm-btn').onclick = () => {
+    const err = $('#book-error'); err.hidden = true;
+    const fail = (msg) => { err.textContent = msg; err.hidden = false; };
+    const dateV = $('#appt-date').value;
+    const reason = $('#reason').value.trim();
+    const ins = $('#insurance').value.trim();
+    const appts = get('mb_appts', []);
+    if (!dateV || !$('#date-error').hidden) return fail('Choose a valid appointment date.');
+    if (!selectedSlot) return fail('Choose an available time.');
+    if (!reason) return fail('Reason for visit is required.');
+    if (reason.length > 200) return fail('Reason for visit must be 200 characters or fewer.');
+    if (ins && !/^[A-Za-z]{3}\d{7}$/.test(ins)) return fail('Insurance ID must be 3 letters followed by 7 digits.');
+    if (appts.length >= 2) return fail('You already have 2 upcoming appointments. Cancel one to book another.');
+    const ref = 'MB-' + String(Math.floor(100000 + Math.random() * 900000));
+    const [h, m] = selectedSlot.split(':').map(Number);
+    const start = parseLocal(dateV); start.setHours(h, m, 0, 0);
+    const appt = { ref, time: selectedSlot, start: start.getTime(), reason };
+    appts.push(appt); set('mb_appts', appts); set('mb_last', appt);
+    renderConfirmed();
+  };
+
+  function renderConfirmed() {
+    const a = get('mb_last', null);
+    $('#booking-ref').textContent = a.ref;
+    $('#conf-email').textContent = ACCOUNT.email;
+    $('#conf-when').textContent = new Date(a.start).toDateString() + ' at ' + a.time;
+    show('confirmed');
+  }
+
+  // ---------- Session timeout (REQ-10) ----------
+  let idle;
+  function resetIdle() {
+    clearTimeout(idle);
+    idle = setTimeout(() => { if (get('mb_session', false)) { set('mb_session', false); show('login'); } }, IDLE_MS);
+  }
+  ['click', 'keydown', 'mousemove'].forEach(ev => document.addEventListener(ev, resetIdle));
+  resetIdle();
+
+  function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+  route();
+})();
+</script>
+</body>
+</html>
